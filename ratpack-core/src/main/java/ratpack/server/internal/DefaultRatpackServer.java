@@ -37,7 +37,7 @@ import ratpack.exec.Blocking;
 import ratpack.exec.Promise;
 import ratpack.exec.Throttle;
 import ratpack.exec.internal.DefaultExecController;
-import ratpack.exec.internal.ThreadBinding;
+import ratpack.exec.internal.ExecThreadBinding;
 import ratpack.func.Action;
 import ratpack.func.Function;
 import ratpack.handling.Handler;
@@ -54,7 +54,7 @@ import ratpack.service.internal.DefaultEvent;
 import ratpack.service.internal.ServicesGraph;
 import ratpack.util.Exceptions;
 import ratpack.util.Types;
-import ratpack.util.internal.ChannelImplDetector;
+import ratpack.util.internal.TransportDetector;
 
 import javax.net.ssl.SSLEngine;
 import java.net.InetSocketAddress;
@@ -124,7 +124,7 @@ public class DefaultRatpackServer implements RatpackServer {
 
       serverConfig = definitionBuild.getServerConfig();
       execController = new DefaultExecController(serverConfig.getThreads());
-      ChannelHandler channelHandler = ThreadBinding.bindFor(true, execController, () -> buildHandler(definitionBuild));
+      ChannelHandler channelHandler = ExecThreadBinding.bindFor(true, execController, () -> buildHandler(definitionBuild));
       channel = buildChannel(serverConfig, channelHandler);
 
       boundAddress = (InetSocketAddress) channel.localAddress();
@@ -249,7 +249,7 @@ public class DefaultRatpackServer implements RatpackServer {
 
     return serverBootstrap
       .group(execController.getEventLoopGroup())
-      .channel(ChannelImplDetector.getServerSocketChannelImpl())
+      .channel(TransportDetector.getServerSocketChannelImpl())
       .option(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
       .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
       .childHandler(new ChannelInitializer<SocketChannel>() {

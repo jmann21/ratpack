@@ -17,7 +17,9 @@
 package ratpack.exec.internal;
 
 import ratpack.exec.*;
+import ratpack.exec.util.retry.RetryPolicy;
 import ratpack.func.Action;
+import ratpack.func.BiAction;
 import ratpack.func.BiFunction;
 import ratpack.func.Block;
 import ratpack.func.Function;
@@ -37,7 +39,7 @@ public class DefaultPromise<T> implements Promise<T> {
 
   @Override
   public void then(final Action<? super T> then) {
-    ThreadBinding.requireComputeThread("Promise.then() can only be called on a compute thread (use Blocking.on() to use a promise on a blocking thread)");
+    ExecThreadBinding.requireComputeThread("Promise.then() can only be called on a compute thread (use Blocking.on() to use a promise on a blocking thread)");
     doConnect(new Downstream<T>() {
       @Override
       public void success(T value) {
@@ -62,7 +64,7 @@ public class DefaultPromise<T> implements Promise<T> {
 
   @Override
   public void connect(Downstream<? super T> downstream) {
-    ThreadBinding.requireComputeThread("Promise.connect() can only be called on a compute thread (use Blocking.on() to use a promise on a blocking thread)");
+    ExecThreadBinding.requireComputeThread("Promise.connect() can only be called on a compute thread (use Blocking.on() to use a promise on a blocking thread)");
     doConnect(downstream);
   }
 
@@ -111,6 +113,45 @@ public class DefaultPromise<T> implements Promise<T> {
           public void success(Duration value) {
             Execution.sleep(value, () ->
               retryAttempt(attemptNum + 1, maxAttempts, up, down, onError)
+            );
+          }
+
+          @Override
+          public void error(Throwable throwable) {
+            down.error(throwable);
+          }
+
+          @Override
+          public void complete() {
+            down.complete();
+          }
+        });
+      }
+    }));
+  }
+
+  public static <T> void retry(RetryPolicy retryPolicy, Upstream<? extends T> up, Downstream<? super T> down, BiAction<? super Integer, ? super Throwable> onError) throws Exception {
+    up.connect(down.onError(e -> {
+      if (retryPolicy.isExhausted()) {
+        down.error(e);
+      } else {
+        Promise<Duration> delay;
+        try {
+          onError.execute(retryPolicy.attempts(), e);
+          delay = retryPolicy.delay();
+        } catch (Throwable errorHandlerError) {
+          if (errorHandlerError != e) {
+            errorHandlerError.addSuppressed(e);
+          }
+          down.error(errorHandlerError);
+          return;
+        }
+
+        delay.connect(new Downstream<Duration>() {
+          @Override
+          public void success(Duration value) {
+            Execution.sleep(value, () ->
+              retry(retryPolicy.increaseAttempt(), up, down, onError)
             );
           }
 

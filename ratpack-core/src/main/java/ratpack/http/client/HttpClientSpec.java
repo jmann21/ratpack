@@ -74,6 +74,32 @@ public interface HttpClientSpec {
   HttpClientSpec poolQueueSize(int poolQueueSize);
 
   /**
+   * The default amount of time to allow a connection to remain open without any traffic.
+   * <p>
+   * If the connection is idle for the timeout value, it will be closed.
+   * <p>
+   * A value of {@link Duration#ZERO} is interpreted as no timeout.
+   * The value is never {@link Duration#isNegative()}.
+   * <p>
+   * This timeout affects several aspects.
+   *
+   * <h4>Reading</h4>
+   * <p>
+   * After making a connection, this timeout will fire if the client does not receive any data within the timeout value.
+   * When the timeout fires, the channel will be closed.
+   * <p>
+   * <h4>Writing</h4>
+   * <p>
+   * This timeout also applies to writing the response.
+   * If the application does not write data within the timeout, the connection will be closed.
+   * <p>
+   *
+   * @return the idle timeout for client connections
+   * @since 1.7
+   */
+  HttpClientSpec idleTimeout(Duration idleTimeout);
+
+  /**
    * The maximum size to allow for responses.
    * <p>
    * Defaults to {@link ServerConfig#DEFAULT_MAX_CONTENT_LENGTH}.
@@ -150,4 +176,26 @@ public interface HttpClientSpec {
    * @since 1.6
    */
   HttpClientSpec responseIntercept(Operation operation);
+
+  /**
+   * Add an interceptor for errors thrown by this client (eg. connection refused, timeouts)
+   * <p>
+   * This function is additive.
+   *
+   * @param interceptor the action to perform on the error before propagating.
+   * @return {@code this}
+   * @since 1.6
+   */
+  HttpClientSpec errorIntercept(Action<? super Throwable> interceptor);
+
+  /**
+   * Enable metric collection on HTTP Client.
+   * <p>
+   * Defaults to false.
+   * <p>
+   * @param enableMetricsCollection A boolean used to enable metric collection.
+   * @return {@code this}
+   * @since 1.6
+   */
+  HttpClientSpec enableMetricsCollection(boolean enableMetricsCollection);
 }

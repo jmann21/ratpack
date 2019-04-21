@@ -19,7 +19,9 @@ package ratpack.handling.internal;
 import com.google.common.base.Strings;
 import com.google.common.collect.Iterables;
 import io.netty.handler.codec.http.HttpHeaderNames;
+import io.netty.handler.codec.http.HttpHeaderValues;
 import ratpack.func.Action;
+import ratpack.func.Function;
 import ratpack.handling.ByContentSpec;
 import ratpack.handling.Context;
 import ratpack.handling.Handler;
@@ -34,6 +36,7 @@ public class ContentNegotiationHandler implements Handler {
   private final List<String> reverseKeys;
   private final Handler noMatchHandler;
   private final Handler unspecifiedHandler;
+  private final Function<String, String> mimeTypeDecorator;
 
   public ContentNegotiationHandler(Registry registry, Action<? super ByContentSpec> action) throws Exception {
     DefaultByContentSpec spec = new DefaultByContentSpec(registry, handlers);
@@ -41,6 +44,7 @@ public class ContentNegotiationHandler implements Handler {
 
     this.noMatchHandler = spec.noMatchHandler;
     this.unspecifiedHandler = spec.unspecifiedHandler;
+    this.mimeTypeDecorator = spec.mimeTypeDecorator;
 
     this.reverseKeys = new ArrayList<>(handlers.keySet());
     Collections.reverse(reverseKeys);
@@ -61,7 +65,8 @@ public class ContentNegotiationHandler implements Handler {
       if (Strings.isNullOrEmpty(winner)) {
         noMatchHandler.handle(context);
       } else {
-        context.getResponse().contentType(winner);
+        String decoratedMimeType = mimeTypeDecorator.apply(winner);
+        context.getResponse().contentType(decoratedMimeType);
         handlers.get(winner).handle(context);
       }
     }
@@ -69,26 +74,38 @@ public class ContentNegotiationHandler implements Handler {
 
   public static class DefaultByContentSpec implements ByContentSpec {
 
-    private static final String TYPE_PLAIN_TEXT = "text/plain";
     private static final String TYPE_HTML = "text/html";
-    private static final String TYPE_JSON = "application/json";
+    private static final String TYPE_TEXT = "text/plain";
     private static final String TYPE_XML = "application/xml";
+    private static final String UTF8_CHARSET_SUFFIX = ";charset=UTF-8";
 
     private final Map<String, Handler> handlers;
     private final Registry registry;
 
     private Handler noMatchHandler = ctx -> ctx.clientError(406);
     private Handler unspecifiedHandler;
+    private final Function<String, String> mimeTypeDecorator;
 
     public DefaultByContentSpec(Registry registry, Map<String, Handler> handlers) {
       this.registry = registry;
       this.handlers = handlers;
+      this.mimeTypeDecorator = mimeType -> {
+        switch (mimeType) {
+          case TYPE_HTML:
+            return TYPE_HTML + UTF8_CHARSET_SUFFIX;
+          case TYPE_TEXT:
+            return TYPE_TEXT + UTF8_CHARSET_SUFFIX;
+          default:
+            return mimeType;
+        }
+      };
       this.unspecifiedHandler = ctx -> {
         Map.Entry<String, Handler> first = Iterables.getFirst(handlers.entrySet(), null);
         if (first == null) {
           noMatchHandler.handle(ctx);
         } else {
-          ctx.getResponse().contentType(first.getKey());
+          String decoratedMimeType = mimeTypeDecorator.apply(first.getKey());
+          ctx.getResponse().contentType(decoratedMimeType);
           first.getValue().handle(ctx);
         }
       };
@@ -96,11 +113,16 @@ public class ContentNegotiationHandler implements Handler {
 
     @Override
     public ByContentSpec type(String mimeType, Handler handler) {
+      return type((CharSequence) mimeType, handler);
+    }
+
+    @Override
+    public ByContentSpec type(CharSequence mimeType, Handler handler) {
       if (mimeType == null) {
         throw new IllegalArgumentException("mimeType cannot be null");
       }
 
-      String trimmed = mimeType.trim();
+      String trimmed = mimeType.toString().trim();
       if (trimmed.isEmpty()) {
         throw new IllegalArgumentException("mimeType cannot be a blank string");
       }
@@ -109,13 +131,13 @@ public class ContentNegotiationHandler implements Handler {
         throw new IllegalArgumentException("mimeType cannot include wildcards");
       }
 
-      handlers.put(mimeType, handler);
+      handlers.put(trimmed, handler);
       return this;
     }
 
     @Override
     public ByContentSpec plainText(Handler handler) {
-      return type(TYPE_PLAIN_TEXT, handler);
+      return type(TYPE_TEXT, handler);
     }
 
     @Override
@@ -125,7 +147,7 @@ public class ContentNegotiationHandler implements Handler {
 
     @Override
     public ByContentSpec json(Handler handler) {
-      return type(TYPE_JSON, handler);
+      return type(HttpHeaderValues.APPLICATION_JSON, handler);
     }
 
     @Override
@@ -163,7 +185,8 @@ public class ContentNegotiationHandler implements Handler {
         if (handler == null) {
           ctx.error(new IllegalStateException("No handler defined for mimeType " + mimeType));
         } else {
-          ctx.getResponse().contentType(mimeType);
+          String decoratedMimeType = mimeTypeDecorator.apply(mimeType);
+          ctx.getResponse().contentType(decoratedMimeType);
           handler.handle(ctx);
         }
       };
@@ -171,6 +194,11 @@ public class ContentNegotiationHandler implements Handler {
 
     @Override
     public ByContentSpec type(String mimeType, Class<? extends Handler> handlerType) {
+      return type(mimeType, registry.get(handlerType));
+    }
+
+    @Override
+    public ByContentSpec type(CharSequence mimeType, Class<? extends Handler> handlerType) {
       return type(mimeType, registry.get(handlerType));
     }
 

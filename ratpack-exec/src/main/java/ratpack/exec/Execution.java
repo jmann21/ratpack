@@ -19,7 +19,7 @@ package ratpack.exec;
 import com.google.common.reflect.TypeToken;
 import io.netty.channel.EventLoop;
 import ratpack.exec.internal.DefaultExecution;
-import ratpack.exec.internal.ThreadBinding;
+import ratpack.exec.internal.ExecThreadBinding;
 import ratpack.func.Action;
 import ratpack.func.Block;
 import ratpack.registry.MutableRegistry;
@@ -129,7 +129,7 @@ public interface Execution extends MutableRegistry {
    * @return whether the current thread is a thread that is managed by Ratpack
    */
   static boolean isManagedThread() {
-    return ThreadBinding.get().isPresent();
+    return ExecThreadBinding.get() != null;
   }
 
   /**
@@ -138,7 +138,7 @@ public interface Execution extends MutableRegistry {
    * @return whether the current thread is a Ratpack compute thread
    */
   static boolean isComputeThread() {
-    return ThreadBinding.get().map(ThreadBinding::isCompute).orElse(false);
+    return ExecThreadBinding.maybeGet().map(ExecThreadBinding::isCompute).orElse(false);
   }
 
   /**
@@ -147,7 +147,7 @@ public interface Execution extends MutableRegistry {
    * @return whether the current thread is a Ratpack blocking thread
    */
   static boolean isBlockingThread() {
-    return ThreadBinding.get().map(threadBinding -> !threadBinding.isCompute()).orElse(false);
+    return ExecThreadBinding.maybeGet().map(threadBinding -> !threadBinding.isCompute()).orElse(false);
   }
 
   /**
@@ -166,6 +166,36 @@ public interface Execution extends MutableRegistry {
    * @return the event loop used by this execution
    */
   EventLoop getEventLoop();
+
+  /**
+   * A reference to this execution.
+   *
+   * @return a reference to this execution
+   * @since 1.6
+   */
+  ExecutionRef getRef();
+
+  /**
+   * A ref to the execution that forked this execution.
+   *
+   * @throws IllegalStateException if this is a top level exception with no parent
+   * @return a ref to the execution that forked this execution
+   * @see #maybeParent()
+   * @since 1.6
+   */
+  default ExecutionRef getParent() {
+    return getRef().getParent();
+  }
+
+  /**
+   * A ref to the execution that forked this execution, if it has a parent.
+   *
+   * @return a ref to the execution that forked this execution
+   * @since 1.6
+   */
+  default Optional<ExecutionRef> maybeParent() {
+    return getRef().maybeParent();
+  }
 
   /**
    * Registers a closeable that will be closed when the execution completes.

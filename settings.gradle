@@ -27,12 +27,15 @@ include \
     "ratpack-session-redis",
     "ratpack-gradle",
     "ratpack-handlebars",
+    "ratpack-reactor",
     "ratpack-remote",
     "ratpack-remote-test",
     "ratpack-rx",
+    "ratpack-rx2",
     "ratpack-dropwizard-metrics",
     "ratpack-h2",
     "ratpack-thymeleaf",
+    "ratpack-thymeleaf3",
     "ratpack-lazybones",
     "ratpack-hikari",
     "ratpack-newrelic",
@@ -46,7 +49,8 @@ include \
     "ratpack-consul",
     "ratpack-base",
     "ratpack-exec",
-    "ratpack-rocker"
+    "ratpack-rocker",
+    "ratpack-gson"
 
 include "perf"
 

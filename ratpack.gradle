@@ -34,13 +34,12 @@ buildscript {
     classpath 'org.apache.commons:commons-lang3:3.6'
 
     classpath "org.kt3k.gradle.plugin:coveralls-gradle-plugin:2.3.1"
-    classpath "com.github.ben-manes:gradle-versions-plugin:0.8"
-    classpath "com.gradle:build-scan-plugin:1.9"
+    classpath "com.github.ben-manes:gradle-versions-plugin:0.17.0"
   }
 }
 
 allprojects {
-  version = "1.6.0-SNAPSHOT"
+  version = "1.7.0-SNAPSHOT"
 }
 
 ext {
@@ -52,22 +51,48 @@ ext {
   isAppveyor = System.getenv("APPVEYOR") != null
   isHeroku = System.getenv("HEROKU") != null
   isSemaphore = System.getenv("SEMAPHORE") != null
-  isCloudCi = isTravis || isDrone || isCodeship || isSnapCi || isAppveyor || isSemaphore
+  isCircleCI = System.getenv("CIRCLECI") != null
+  isCloudCi = isTravis || isDrone || isCodeship || isSnapCi || isAppveyor || isSemaphore || isCircleCI
   isCi = isCloudCi
 
   publishedModules = [
-    "ratpack-core", "ratpack-groovy", "ratpack-guice", "ratpack-session", "ratpack-session-redis", "ratpack-test", "ratpack-groovy-test",
-    "ratpack-manual", "ratpack-gradle", "ratpack-handlebars", "ratpack-remote", "ratpack-remote-test",
-    "ratpack-dropwizard-metrics", "ratpack-h2", "ratpack-thymeleaf", "ratpack-rx", "ratpack-hikari", "ratpack-newrelic",
-    "ratpack-pac4j", "ratpack-hystrix", "ratpack-spring-boot", "ratpack-spring-boot-starter", "ratpack-retrofit2",
-    "ratpack-jdbc-tx", "ratpack-consul", "ratpack-base", "ratpack-exec", "ratpack-rocker"
+    "ratpack-base",
+    "ratpack-consul",
+    "ratpack-core",
+    "ratpack-dropwizard-metrics",
+    "ratpack-exec",
+    "ratpack-gradle",
+    "ratpack-groovy",
+    "ratpack-groovy-test",
+    "ratpack-gson",
+    "ratpack-guice",
+    "ratpack-h2",
+    "ratpack-handlebars",
+    "ratpack-hikari",
+    "ratpack-hystrix",
+    "ratpack-jdbc-tx",
+    "ratpack-manual",
+    "ratpack-newrelic",
+    "ratpack-pac4j",
+    "ratpack-reactor",
+    "ratpack-remote",
+    "ratpack-remote-test",
+    "ratpack-retrofit2",
+    "ratpack-rocker",
+    "ratpack-rx", "ratpack-rx2",
+    "ratpack-session",
+    "ratpack-session-redis",
+    "ratpack-spring-boot",
+    "ratpack-spring-boot-starter",
+    "ratpack-test",
+    "ratpack-thymeleaf", "ratpack-thymeleaf3",
   ].collect { project(it) }
 
   noCodeModules = [
     "ratpack-spring-boot-starter"
   ]
 
-  apiModules = publishedModules.findAll { !(it.name in ["ratpack-manual", "ratpack-gradle", "ratpack-spring-boot-starter"]) }
+  apiModules = publishedModules.findAll { !(it.name in ["ratpack-manual", "ratpack-gradle", "ratpack-spring-boot-starter", "ratpack-thymeleaf3"]) }
 }
 
 apply from: 'gradle/buildScan.gradle'
@@ -102,8 +127,12 @@ artifactoryPublish { task ->
 
 task bintrayPublish() {
   doLast {
-    if (!project.hasProperty("ratpackOssJfrogApiKey")) {
-      throw new InvalidUserDataException("You must provide ratpackOssJfrogApiKey")
+    if (!project.hasProperty("ratpackBintrayUser")) {
+      throw new InvalidUserDataException("You must provide ratpackBintrayUser")
+    }
+
+    if (!project.hasProperty("ratpackBintrayApiKey")) {
+      throw new InvalidUserDataException("You must provide ratpackBintrayApiKey")
     }
 
     if (!project.hasProperty('buildNumber')) {
@@ -112,20 +141,10 @@ task bintrayPublish() {
 
     def curl = ['curl',
                 '-X', 'POST',
-                "-H", "X-JFrog-Art-Api: ${ratpackOssJfrogApiKey}",
-                "-H", "Content-Type: application/json",
-                "-d", """{
-    "subject": "ratpack",
-    "repoName": "maven",
-    "packageName": "ratpack",
-    "versionName": "${project.version}",
-    "licenses": ["Apache-2.0"],
-    "vcs_url": "https://github.com/ratpack/ratpack"
-}
-""",
-                "https://oss.jfrog.org/api/build/pushToBintray/ratpack/$project.buildNumber"
+                "-u", "${ratpackBintrayUser}:${ratpackBintrayApiKey}",
+                "https://oss.jfrog.org/api/plugins/build/promote/releaseToBintray/ratpack/$buildNumber?params=org=ratpack;repo=maven;package=ratpack"
     ].execute()
-    logger.info("Received response: ${curl.text}")
+    println "Received response: ${curl.text}"
   }
 }
 
@@ -136,6 +155,7 @@ allprojects {
   apply plugin: "idea"
   apply plugin: "eclipse"
   apply from: "$rootDir/gradle/dependencyRules.gradle"
+  apply plugin: "com.github.ben-manes.versions"
 
   repositories {
     jcenter()
@@ -144,6 +164,12 @@ allprojects {
 
   configurations {
     published
+  }
+
+  if (isCi) {
+    tasks.withType(JavaExec) {
+      maxHeapSize = "1g"
+    }
   }
 }
 

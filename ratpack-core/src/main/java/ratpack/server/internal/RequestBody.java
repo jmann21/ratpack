@@ -23,6 +23,7 @@ import io.netty.handler.codec.http.*;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.GenericFutureListener;
 import org.reactivestreams.Subscription;
+import ratpack.bytebuf.ByteBufRef;
 import ratpack.exec.Downstream;
 import ratpack.exec.Execution;
 import ratpack.exec.Promise;
@@ -235,10 +236,14 @@ public class RequestBody implements RequestBodyReader, RequestBodyAccumulator {
                 }
               };
 
-              startBodyRead(e -> {
-                discard();
-                write.error(e);
-              });
+              if (earlyClose) {
+                listener.onEarlyClose();
+              } else {
+                startBodyRead(e -> {
+                  discard();
+                  write.error(e);
+                });
+              }
             }
           } else {
             ctx.read();
@@ -317,10 +322,12 @@ public class RequestBody implements RequestBodyReader, RequestBodyAccumulator {
   private ByteBuf composeReceived() {
     if (received.isEmpty()) {
       return Unpooled.EMPTY_BUFFER;
+    } else if (received.size() == 1) {
+      return new ByteBufRef(received.remove(0));
     } else {
-      ByteBuf[] byteBufsArray = this.received.toArray(new ByteBuf[this.received.size()]);
+      ByteBuf[] byteBufsArray = this.received.toArray(new ByteBuf[0]);
       received.clear();
-      return Unpooled.unmodifiableBuffer(byteBufsArray);
+      return Unpooled.wrappedUnmodifiableBuffer(byteBufsArray);
     }
   }
 

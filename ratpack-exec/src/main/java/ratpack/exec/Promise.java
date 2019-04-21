@@ -21,11 +21,21 @@ import ratpack.exec.internal.CachingUpstream;
 import ratpack.exec.internal.DefaultExecution;
 import ratpack.exec.internal.DefaultPromise;
 import ratpack.exec.util.Promised;
-import ratpack.func.*;
+import ratpack.exec.util.retry.RetryPolicy;
+
+import ratpack.func.Action;
+import ratpack.func.BiAction;
+import ratpack.func.BiFunction;
+import ratpack.func.Block;
+import ratpack.func.Factory;
+import ratpack.func.Function;
+import ratpack.func.Pair;
+import ratpack.func.Predicate;
 import ratpack.util.Exceptions;
 
 import java.time.Duration;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
 
 import static ratpack.func.Action.ignoreArg;
 
@@ -1071,6 +1081,36 @@ public interface Promise<T> {
   /**
    * Transforms a failure of the given type (potentially into a value) by applying the given function to it.
    * <p>
+   * This method is similar to {@link #mapError(Function)}, except that it will only apply depending if it satisfies the predicate.
+   * If the error is not of the given type, it will not be transformed and will propagate as normal.
+   *
+   * @param predicate the predicate to test against the error
+   * @param function the transformation to apply to the promise failure
+   * @return a promise
+   * @since 1.6.0
+   */
+  default Promise<T> mapError(Predicate<? super Throwable> predicate, Function<? super Throwable, ? extends T> function) {
+    return transform(up -> down ->
+      up.connect(down.onError(throwable -> {
+        if (predicate.apply(throwable)) {
+          T transformed;
+          try {
+            transformed = function.apply(throwable);
+          } catch (Throwable t) {
+            down.error(t);
+            return;
+          }
+          down.success(transformed);
+        } else {
+          down.error(throwable);
+        }
+      }))
+    );
+  }
+
+  /**
+   * Transforms a failure of the given type (potentially into a value) by applying the given function to it.
+   * <p>
    * This method is similar to {@link #mapError(Function)}, except that it allows async transformation.
    *
    * @param function the transformation to apply to the promise failure
@@ -1108,6 +1148,35 @@ public interface Promise<T> {
           Promise<T> transformed;
           try {
             transformed = function.apply(type.cast(throwable));
+          } catch (Throwable t) {
+            down.error(t);
+            return;
+          }
+          transformed.connect(down);
+        } else {
+          down.error(throwable);
+        }
+      }))
+    );
+  }
+
+  /**
+   * Transforms a failure of the given type (potentially into a value) by applying the given function to it.
+   * <p>
+   * This method is similar to {@link #mapError(Predicate, Function)}, except that it allows async transformation.
+   *
+   * @param predicate the predicate to test against the error
+   * @param function the transformation to apply to the promise failure
+   * @return a promise
+   * @since 1.6.0
+   */
+  default Promise<T> flatMapError(Predicate<? super Throwable> predicate, Function<? super Throwable, ? extends Promise<T>> function) {
+    return transform(up -> down ->
+      up.connect(down.onError(throwable -> {
+        if (predicate.apply(throwable)) {
+          Promise<T> transformed;
+          try {
+            transformed = function.apply(throwable);
           } catch (Throwable t) {
             down.error(t);
             return;
@@ -1840,7 +1909,7 @@ public interface Promise<T> {
         @Override
         public void error(Throwable throwable) {
           try {
-            listener.execute(Result.<T>error(throwable));
+            listener.execute(Result.error(throwable));
           } catch (Exception e) {
             throwable.addSuppressed(e);
           }
@@ -2279,52 +2348,6 @@ public interface Promise<T> {
 
   /**
    * Causes {@code this} yielding the promised value to be retried on error, after a fixed delay.
-   * <p>
-   * The given function is invoked for each failure,
-   * with the sequence number of the failure as the first argument and the failure exception as the second.
-   * This may be used to log or collect exceptions.
-   * If all errors are to be ignored, use {@link BiAction#noop()}.
-   * <p>
-   * Any exception thrown by the function – possibly the exception it receives as an argument – will
-   * be propagated to the subscriber, yielding a failure.
-   * This can be used to selectively retry on certain failures, but immediately fail on others.
-   * <p>
-   * If the promise fails {@code maxAttempts} times,
-   * the given function will not be invoked and the most and the most recent exception will propagate.
-   * <p>
-   * To retry immediately, pass a zero duration.
-   * Use {@link #retry(int, BiFunction)} if desiring a dynamic (e.g. increasing) delay between attempts.
-   *
-   * <pre class="java">{@code
-   * import ratpack.exec.ExecResult;
-   * import ratpack.exec.Promise;
-   * import ratpack.test.exec.ExecHarness;
-   *
-   * import java.time.Duration;
-   * import java.util.Arrays;
-   * import java.util.LinkedList;
-   * import java.util.List;
-   * import java.util.concurrent.atomic.AtomicInteger;
-   *
-   * import static org.junit.Assert.assertEquals;
-   *
-   * public class Example {
-   *   private static final List<String> LOG = new LinkedList<>();
-   *
-   *   public static void main(String... args) throws Exception {
-   *     AtomicInteger source = new AtomicInteger();
-   *
-   *     ExecResult<Integer> result = ExecHarness.yieldSingle(exec ->
-   *       Promise.sync(source::incrementAndGet)
-   *         .mapIf(i -> i < 3, i -> { throw new IllegalStateException(); })
-   *         .retry(3, Duration.ofMillis(500), (i, t) -> LOG.add("retry attempt: " + i))
-   *     );
-   *
-   *     assertEquals(Integer.valueOf(3), result.getValue());
-   *     assertEquals(Arrays.asList("retry attempt: 1", "retry attempt: 2"), LOG);
-   *   }
-   * }
-   * }</pre>
    *
    * @param maxAttempts the maximum number of times to retry
    * @param delay the duration to wait between retry attempts
@@ -2332,7 +2355,9 @@ public interface Promise<T> {
    * @return a promise with a retry error handler
    * @see #retry(int, BiFunction)
    * @since 1.5
+   * @deprecated since 1.7, use {@link #retry(RetryBuilder, BiAction)}
    */
+  @Deprecated
   default Promise<T> retry(int maxAttempts, Duration delay, @NonBlocking BiAction<? super Integer, ? super Throwable> onError) {
     Promise<Duration> delayPromise = Promise.value(delay);
     return retry(maxAttempts, (i, error) ->
@@ -2345,23 +2370,41 @@ public interface Promise<T> {
 
   /**
    * Causes {@code this} yielding the promised value to be retried on error, after a calculated delay.
+   *
+   * @param maxAttempts the maximum number of times to retry
+   * @param onError the error handler
+   * @return a promise with a retry error handler
+   * @see #retry(int, Duration, BiAction)
+   * @since 1.5
+   * @deprecated since 1.7, use {@link #retry(RetryBuilder, BiAction)}
+   */
+  @Deprecated
+  default Promise<T> retry(int maxAttempts, BiFunction<? super Integer, ? super Throwable, Promise<Duration>> onError) {
+    return transform(up -> down -> DefaultPromise.retryAttempt(1, maxAttempts, up, down, onError));
+  }
+
+  /**
+   * Causes {@code this} yielding the promised value to be retried on error, under the rules of provided {@code retryPolicy}.
    * <p>
    * The given function is invoked for each failure,
    * with the sequence number of the failure as the first argument and the failure exception as the second.
-   * It should return the duration of time to wait before retrying.
-   * To retry immediately, return a zero duration.
-   * Use {@link #retry(int, Duration, BiAction)} if desiring a fixed delay between attempts.
+   * This may be used to log or collect exceptions.
+   * If all errors are to be ignored, use {@link BiAction#noop()}.
    * <p>
    * Any exception thrown by the function – possibly the exception it receives as an argument – will
    * be propagated to the subscriber, yielding a failure.
    * This can be used to selectively retry on certain failures, but immediately fail on others.
    * <p>
-   * If the promise fails {@code maxAttempts} times,
-   * the given function will not be invoked and the most and the most recent exception will propagate.
+   * If the promise exhausts the {@code retryPolicy},
+   * the given function will not be invoked and the most recent exception will propagate.
+   * <p>
    *
    * <pre class="java">{@code
    * import ratpack.exec.ExecResult;
    * import ratpack.exec.Promise;
+   * import ratpack.exec.util.retry.AttemptRetryPolicy;
+   * import ratpack.exec.util.retry.RetryPolicy;
+   * import ratpack.exec.util.retry.FixedDelay;
    * import ratpack.test.exec.ExecHarness;
    *
    * import java.time.Duration;
@@ -2378,13 +2421,14 @@ public interface Promise<T> {
    *   public static void main(String... args) throws Exception {
    *     AtomicInteger source = new AtomicInteger();
    *
+   *     RetryPolicy retryPolicy = AttemptRetryPolicy.of(b -> b
+   *       .delay(FixedDelay.of(Duration.ofMillis(500)))
+   *       .maxAttempts(3));
+   *
    *     ExecResult<Integer> result = ExecHarness.yieldSingle(exec ->
    *       Promise.sync(source::incrementAndGet)
    *         .mapIf(i -> i < 3, i -> { throw new IllegalStateException(); })
-   *         .retry(3, (i, t) -> {
-   *           LOG.add("retry attempt: " + i);
-   *           return Promise.value(Duration.ofMillis(500 * i));
-   *         })
+   *         .retry(retryPolicy, (i, t) -> LOG.add("retry attempt: " + i))
    *     );
    *
    *     assertEquals(Integer.valueOf(3), result.getValue());
@@ -2393,13 +2437,37 @@ public interface Promise<T> {
    * }
    * }</pre>
    *
-   * @param maxAttempts the maximum number of times to retry
+   * @param retryPolicy policy to govern this retry behaviour
    * @param onError the error handler
    * @return a promise with a retry error handler
-   * @see #retry(int, Duration, BiAction)
-   * @since 1.5
+   * @since 1.7
    */
-  default Promise<T> retry(int maxAttempts, BiFunction<? super Integer, ? super Throwable, Promise<Duration>> onError) {
-    return transform(up -> down -> DefaultPromise.retryAttempt(1, maxAttempts, up, down, onError));
+  default Promise<T> retry(RetryPolicy retryPolicy, BiAction<? super Integer, ? super Throwable> onError) {
+    return transform(up -> down -> DefaultPromise.retry(retryPolicy, up, down, onError));
   }
+
+  /**
+   * Convert this promise into a {@link CompletableFuture}.
+   * <p>
+   * @return a {@link CompletableFuture} that will complete successfully or exceptionally on the current execution thread.
+   * @since 1.6
+   */
+  default CompletableFuture<T> toCompletableFuture() {
+    CompletableFuture<T> future = new CompletableFuture<>();
+    onError(future::completeExceptionally).then(future::complete);
+    return future;
+  }
+
+  /**
+   * Convert a {@link CompletableFuture} into a promise.
+   * <p>
+   * @param future the {@link CompletableFuture} to convert into a {@link Promise}
+   * @param <T> The type of the promised value
+   * @return a {@link Promise} that will be consumed on the current execution thread.
+   * @since 1.6
+   */
+  static <T> Promise<T> toPromise(CompletableFuture<T> future) {
+    return async(downstream -> downstream.accept(future));
+  }
+
 }

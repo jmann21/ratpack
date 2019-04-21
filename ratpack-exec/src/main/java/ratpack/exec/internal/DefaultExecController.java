@@ -27,7 +27,8 @@ import ratpack.exec.*;
 import ratpack.func.Action;
 import ratpack.func.Block;
 import ratpack.registry.RegistrySpec;
-import ratpack.util.internal.ChannelImplDetector;
+import ratpack.util.internal.InternalRatpackError;
+import ratpack.util.internal.TransportDetector;
 
 import java.util.List;
 import java.util.Queue;
@@ -57,7 +58,7 @@ public class DefaultExecController implements ExecControllerInternal {
 
   public DefaultExecController(int numThreads) {
     this.numThreads = numThreads;
-    this.eventLoopGroup = ChannelImplDetector.eventLoopGroup(numThreads, new ExecControllerBindingThreadFactory(true, "ratpack-compute", Thread.MAX_PRIORITY));
+    this.eventLoopGroup = TransportDetector.eventLoopGroup(numThreads, new ExecControllerBindingThreadFactory(true, "ratpack-compute", Thread.MAX_PRIORITY));
     this.blockingExecutor = Executors.newCachedThreadPool(new ExecControllerBindingThreadFactory(false, "ratpack-blocking", Thread.NORM_PRIORITY));
   }
 
@@ -131,7 +132,7 @@ public class DefaultExecController implements ExecControllerInternal {
     @Override
     public Thread newThread(final Runnable r) {
       return super.newThread(() -> {
-        ThreadBinding.bind(compute, DefaultExecController.this);
+        ExecThreadBinding.bind(compute, DefaultExecController.this);
         Thread.currentThread().setContextClassLoader(contextClassLoader);
         r.run();
       });
@@ -184,16 +185,29 @@ public class DefaultExecController implements ExecControllerInternal {
 
       @Override
       public void start(Action<? super Execution> initialExecutionSegment) {
-        if (eventLoop.inEventLoop() && DefaultExecution.get() == null) {
-          try {
-            new DefaultExecution(DefaultExecController.this, eventLoop, registry, initialExecutionSegment, onStart, onComplete, errorListeners);
-          } catch (Throwable e) {
-            throw new InternalError("could not start execution", e);
-          }
+        DefaultExecution current = DefaultExecution.get();
+        DefaultExecution execution = createExecution(initialExecutionSegment, current == null ? null : current.getRef());
+        if (eventLoop.inEventLoop() && current == null) {
+          execution.drain();
         } else {
-          eventLoop.submit(() ->
-            new DefaultExecution(DefaultExecController.this, eventLoop, registry, initialExecutionSegment, onStart, onComplete, errorListeners)
+          eventLoop.submit(execution::drain);
+        }
+      }
+
+      private DefaultExecution createExecution(Action<? super Execution> initialExecutionSegment, ExecutionRef parentRef) {
+        try {
+          return new DefaultExecution(
+            DefaultExecController.this,
+            parentRef,
+            eventLoop,
+            registry,
+            initialExecutionSegment,
+            onStart,
+            onComplete,
+            this.errorListeners
           );
+        } catch (Throwable e) {
+          throw new InternalRatpackError("could not start execution", e);
         }
       }
     };

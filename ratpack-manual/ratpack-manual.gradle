@@ -20,6 +20,20 @@ import org.gradle.external.javadoc.internal.JavadocOptionFileWriterContext
 
 import static org.pegdown.Extensions.*
 
+buildscript {
+  repositories {
+    jcenter()
+    gradlePluginPortal()
+  }
+  dependencies {
+    classpath "com.github.robfletcher:compass-gradle-plugin:2.0.6"
+    classpath "gradle.plugin.com.github.jengelman.gradle.plugins:gradle-processes:0.5.0"
+    classpath "org.pegdown:pegdown:${commonVersions.pegdown}"
+    classpath "com.eriwen:gradle-js-plugin:1.12.1"
+    classpath "com.google.javascript:closure-compiler:v20150315"
+  }
+}
+
 description = "The manual for Ratpack (documentation & API reference)"
 
 apply from: "$rootDir/gradle/javaModule.gradle"
@@ -27,16 +41,8 @@ apply from: "$rootDir/gradle/javaModule.gradle"
 apply plugin: "com.github.robfletcher.compass"
 apply plugin: "com.eriwen.gradle.js"
 
-buildscript {
-  repositories {
-    jcenter()
-  }
-  dependencies {
-    classpath "com.github.robfletcher:compass-gradle-plugin:2.0.5"
-    classpath "org.pegdown:pegdown:${commonVersions.pegdown}"
-    classpath "com.eriwen:gradle-js-plugin:1.12.1"
-    classpath "com.google.javascript:closure-compiler:v20150315"
-  }
+jruby {
+  execVersion = '9.1.14.0'
 }
 
 dependencies {
@@ -47,6 +53,7 @@ dependencies {
     exclude group: "org.slf4j", module: "slf4j-api"
     exclude group: "com.google.inject", module: "guice"
     exclude group: "org.apache.httpcomponents", module: "httpclient"
+    exclude group: "org.apache.commons", module: "commons-lang3"
     exclude group: "com.fasterxml.jackson.core", module: "jackson-databind"
   }
   testCompile gradleTestKit()
@@ -65,6 +72,14 @@ projectDependencies.findAll {
   it.dependencyProject.path in [":ratpack-groovy-test", ":ratpack-test-internal"]
 }.each {
   it.exclude group: "commons-logging", module: "commons-logging"
+}
+
+configurations.all {
+  if (it.name in ["testCompile", "testRuntime", "testCompileClasspath", "testRuntimeClasspath"]) {
+    resolutionStrategy {
+      force "org.reactivestreams:reactive-streams:1.0.0.final"
+    }
+  }
 }
 
 apply from: "$rootDir/gradle/markdown2book.gradle"
@@ -125,7 +140,7 @@ task api(type: Javadoc) {
     classpath += it.sourceSets.main.compileClasspath + it.sourceSets.main.output
 
     if (it.hasProperty("apiLinks")) {
-      options.links(* it.apiLinks)
+      options.links(*it.apiLinks)
     }
   }
 
@@ -205,16 +220,18 @@ task tokeniseManual(type: Sync) {
   into "$buildDir/manual-tokenised"
 
   ext.substitutionProperties = [
-      title: "Ratpack",
-      tagline: "Simple, lean & powerful HTTP apps",
-      "ratpack-version": project.version,
-      "ratpack-group": project.group,
-      "groovy-version": commonVersions.groovy,
-      "pac4j-version": commonVersions.pac4j,
-      "retrofit-version": commonVersions.retrofit,
-      "slf4j-version": commonVersions.slf4j,
-      "gradle-version": gradle.gradleVersion,
-      head: """
+    title             : "Ratpack",
+    tagline           : "Simple, lean & powerful HTTP apps",
+    "ratpack-version" : project.version,
+    "ratpack-group"   : project.group,
+    "groovy-version"  : commonVersions.groovy,
+    "pac4j-version"   : commonVersions.pac4j,
+    "retrofit-version": commonVersions.retrofit,
+    "slf4j-version"   : commonVersions.slf4j,
+    "spock-version"   : commonVersions.spock,
+    "shadow-version"  : commonVersions.shadow,
+    "gradle-version"  : gradle.gradleVersion,
+    head              : """
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <link href="css/normalize.css" rel="stylesheet" type="text/css">
@@ -223,7 +240,7 @@ task tokeniseManual(type: Sync) {
         <link href="css/fonts.css" rel="stylesheet" type="text/css">
         <script src="js/all.min.js"></script>
       """,
-      footer: """
+    footer            : """
         <h2>Ratpack Manual - $version - ${new Date().format("MMMM, yyyy")}</h2>
         <p>
           <a href="http://www.ratpack.io">www.ratpack.io</a><br>
@@ -316,7 +333,7 @@ task jsAll(type: com.eriwen.gradle.js.tasks.CombineJsTask, dependsOn: minifyJs) 
 task stylizeManual(type: Sync) {
   into "$buildDir/stylized-manual"
   from compileManual
-  from (compassCompile) {
+  from(compassCompile) {
     exclude 'bin/'
     exclude 'build_info/'
     exclude 'cache/'
@@ -381,8 +398,9 @@ task manualZip(type: Zip) {
 }
 
 configurations {
-  zip
+  published.extendsFrom zip
 }
+
 artifacts {
   zip manualZip
 }

@@ -59,7 +59,7 @@ import ratpack.registry.Registry;
  *
  * }</pre>
  *
- * @since 1.5
+ * @since 1.7
  */
 @FunctionalInterface
 public interface ExecutionErrorListener {

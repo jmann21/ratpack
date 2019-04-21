@@ -21,18 +21,19 @@ import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.reflect.TypeToken;
 import io.netty.channel.EventLoop;
-import io.netty.util.concurrent.FastThreadLocal;
 import io.netty.util.internal.PlatformDependent;
 import org.reactivestreams.Publisher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import ratpack.api.Nullable;
 import ratpack.exec.*;
 import ratpack.func.Action;
 import ratpack.func.Block;
 import ratpack.registry.MutableRegistry;
 import ratpack.registry.NotInRegistryException;
+import ratpack.registry.Registry;
 import ratpack.registry.RegistrySpec;
-import ratpack.registry.internal.SimpleMutableRegistry;
+import ratpack.registry.internal.DefaultMutableRegistry;
 import ratpack.stream.TransformablePublisher;
 
 import java.util.*;
@@ -43,26 +44,29 @@ public class DefaultExecution implements Execution {
 
   public final static Logger LOGGER = LoggerFactory.getLogger(Execution.class);
 
-  private static final ExecutionErrorListener LOG_UNCAUGHT = (e, t) ->
+  private static final ExecutionErrorListener LOG_UNCAUGHT = (e, t) -> {
     DefaultExecution.LOGGER.error("Uncaught execution exception in execution " + e + " :", t);
+  };
 
-  public final static FastThreadLocal<DefaultExecution> THREAD_BINDING = new FastThreadLocal<>();
 
   private ExecStream execStream;
 
+  private final Ref ref;
   private final ExecControllerInternal controller;
   private final EventLoop eventLoop;
   private final Action<? super Execution> onComplete;
 
   private List<AutoCloseable> closeables;
 
-  private final MutableRegistry registry = new SimpleMutableRegistry();
+  private final MutableRegistry registry = new DefaultMutableRegistry();
 
   private List<ExecInterceptor> adhocInterceptors;
   private Iterable<? extends ExecInterceptor> interceptors;
 
+  private Thread thread;
+
   public DefaultExecution(
-    ExecControllerInternal controller,
+    ExecControllerInternal controller, @Nullable ExecutionRef parent,
     EventLoop eventLoop,
     Action<? super RegistrySpec> registryInit,
     Action<? super Execution> action,
@@ -70,6 +74,7 @@ public class DefaultExecution implements Execution {
     Action<? super Execution> onComplete,
     Iterable<ExecutionErrorListener> errorListeners
     ) throws Exception {
+    this.ref = new Ref(this, parent);
     this.controller = controller;
     this.eventLoop = eventLoop;
     this.onComplete = onComplete;
@@ -91,20 +96,23 @@ public class DefaultExecution implements Execution {
     for (ExecInitializer initializer : registry.getAll(ExecInitializer.class)) {
       initializer.init(this);
     }
-
-    drain();
   }
 
-  public static DefaultExecution get() throws UnmanagedThreadException {
-    return THREAD_BINDING.get();
+  public static DefaultExecution get() {
+    ExecThreadBinding execThreadBinding = ExecThreadBinding.get();
+    if (execThreadBinding == null) {
+      return null;
+    } else {
+      return execThreadBinding.getExecution();
+    }
   }
 
   public static DefaultExecution require() throws UnmanagedThreadException {
-    DefaultExecution executionBacking = get();
-    if (executionBacking == null) {
-      throw new UnmanagedThreadException();
+    DefaultExecution execution = ExecThreadBinding.require().getExecution();
+    if (execution == null) {
+      throw new IllegalStateException("No execution bound for thread " + Thread.currentThread().getName());
     } else {
-      return executionBacking;
+      return execution;
     }
   }
 
@@ -129,6 +137,12 @@ public class DefaultExecution implements Execution {
       );
   }
 
+  @Override
+  public ExecutionRef getRef() {
+    return ref;
+  }
+
+  @Override
   public EventLoop getEventLoop() {
     return eventLoop;
   }
@@ -148,32 +162,48 @@ public class DefaultExecution implements Execution {
   }
 
   public boolean isBound() {
-    return THREAD_BINDING.get() == this;
+    return thread == Thread.currentThread();
   }
 
-  private void drain() {
+  public void drain() {
+    if (isBound()) {
+      return; // already draining
+    }
+
     if (execStream == TerminalExecStream.INSTANCE || execStream == InErrorHandlerExecStream.INSTANCE) {
       return;
     }
 
-    DefaultExecution currentExecution = THREAD_BINDING.get();
-    if (this == currentExecution) {
+    // Move to the right thread if necessary
+    if (!eventLoop.inEventLoop()) {
+      eventLoopDrain();
       return;
     }
 
-    if (!eventLoop.inEventLoop() || currentExecution != null) {
+    // Queue if our thread is busy with another execution
+    if (get() != null) {
       eventLoopDrain();
       return;
     }
 
     try {
-      THREAD_BINDING.set(this);
-      intercept(interceptors.iterator());
+      bindToThread();
+      exec(interceptors.iterator());
     } catch (Throwable e) {
       interceptorError(e);
     } finally {
-      THREAD_BINDING.remove();
+      unbindFromThread();
     }
+  }
+
+  public void unbindFromThread() {
+    thread = null;
+    ExecThreadBinding.require().setExecution(null);
+  }
+
+  public void bindToThread() {
+    thread = Thread.currentThread();
+    ExecThreadBinding.require().setExecution(this);
   }
 
   public static void interceptorError(Throwable e) {
@@ -184,9 +214,9 @@ public class DefaultExecution implements Execution {
     return interceptors;
   }
 
-  private void intercept(final Iterator<? extends ExecInterceptor> interceptors) throws Exception {
+  private void exec(final Iterator<? extends ExecInterceptor> interceptors) throws Exception {
     if (interceptors.hasNext()) {
-      interceptors.next().intercept(this, ExecInterceptor.ExecType.COMPUTE, () -> intercept(interceptors));
+      interceptors.next().intercept(this, ExecInterceptor.ExecType.COMPUTE, () -> exec(interceptors));
     } else {
       exec();
     }
@@ -219,6 +249,8 @@ public class DefaultExecution implements Execution {
           }
         }
       }
+
+      ref.execution = null;
     }
   }
 
@@ -316,6 +348,16 @@ public class DefaultExecution implements Execution {
     }
 
     @Override
+    void delimit(Action<? super Throwable> onError, Action<? super Continuation> segment) {
+      throw new ExecutionException("this execution has completed (you may be trying to use a promise in a cleanup method)");
+    }
+
+    @Override
+    void delimitStream(Action<? super Throwable> onError, Action<? super ContinuationStream> segment) {
+      throw new ExecutionException("this execution has completed (you may be trying to use a promise in a cleanup method)");
+    }
+
+    @Override
     void enqueue(Block segment) {
       throw new ExecutionException("this execution has completed (you may be trying to use a promise in a cleanup method)");
     }
@@ -323,6 +365,11 @@ public class DefaultExecution implements Execution {
     @Override
     void error(Throwable throwable) {
       throw new ExecutionException("this execution has completed (you may be trying to use a promise in a cleanup method)");
+    }
+
+    @Override
+    ExecStream asParent() {
+      return this;
     }
   }
 
@@ -418,8 +465,7 @@ public class DefaultExecution implements Execution {
       }
 
       final Execution currentExecution = DefaultExecution.this;
-      List<ExecutionErrorListener> errorListeners =
-        Lists.newArrayList(registry.getAll(ExecutionErrorListener.class));
+      List<ExecutionErrorListener> errorListeners = Lists.newArrayList(registry.getAll(ExecutionErrorListener.class));
 
       controller.fork()
         .onComplete(e -> {
@@ -639,4 +685,54 @@ public class DefaultExecution implements Execution {
       }
     }
   }
+
+  private static final class Ref implements ExecutionRef {
+
+    private Execution execution;
+    private final ExecutionRef parent;
+
+    private Ref(Execution execution, ExecutionRef parent) {
+      this.execution = execution;
+      this.parent = parent;
+    }
+
+    private Registry getRegistry() {
+      Execution execution = this.execution;
+      if (execution == null) {
+        return Registry.empty();
+      } else {
+        return execution;
+      }
+    }
+
+    @Override
+    public ExecutionRef getParent() {
+      if (parent == null) {
+        throw new IllegalStateException("execution does not have a parent");
+      }
+      return parent;
+    }
+
+    @Override
+    public Optional<ExecutionRef> maybeParent() {
+      return Optional.ofNullable(parent);
+    }
+
+    @Override
+    public boolean isComplete() {
+      Execution execution = this.execution;
+      return execution == null || execution.isComplete();
+    }
+
+    @Override
+    public <O> Optional<O> maybeGet(TypeToken<O> type) {
+      return getRegistry().maybeGet(type);
+    }
+
+    @Override
+    public <O> Iterable<? extends O> getAll(TypeToken<O> type) {
+      return getRegistry().getAll(type);
+    }
+  }
+
 }

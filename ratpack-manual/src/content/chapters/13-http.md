@@ -319,7 +319,59 @@ TODO introduce assets method
 
 ### Before send
 
-TODO introduce beforeSend method and the Response interface.
+The [`Response`](api/ratpack/http/Response.html) object contains a method, `beforeSend(Action<? super Response> responseFinalizer)`, that is invoked immediately before a Response is sent to the client.
+
+You may not call any of the `.send()` methods on the `Response` within the `responseFinalizer` callback.
+
+This method is particularly useful for modifying
+
+* headers
+* cookies
+* the status
+* the content-type
+
+at the last second.
+
+A practical use-case for this would be modifying the status code or headers when using [`StreamedResponse.forwardTo()`](api/ratpack/http/client/StreamedResponse.html).
+
+For example:
+
+```language-java
+import io.netty.handler.codec.http.HttpHeaderNames;
+import ratpack.http.client.ReceivedResponse;
+import ratpack.test.embed.EmbeddedApp;
+import ratpack.http.Headers;
+import ratpack.http.Request;
+import ratpack.http.Status;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
+
+public class Example {
+  public static void main(String... args) throws Exception {
+    EmbeddedApp
+      .fromHandler(ctx -> {
+        ctx.getResponse()
+          .contentType("application/json")
+          .status(Status.OK)
+          .beforeSend(response -> {
+             response.getHeaders().remove(HttpHeaderNames.CONTENT_LENGTH);
+             response.cookie("DNT", "1");
+             response.status(Status.of(451, "Unavailable for Legal Reasons"));
+             response.contentType("text/plain");
+          }).send();
+      })
+      .test(httpClient -> {
+        ReceivedResponse receivedResponse = httpClient.get();
+
+        Headers headers = receivedResponse.getHeaders();
+        assertEquals(451, receivedResponse.getStatusCode());
+        assertEquals("text/plain", headers.get(HttpHeaderNames.CONTENT_TYPE));
+        assertTrue(headers.get(HttpHeaderNames.SET_COOKIE).contains("DNT"));
+      });
+  }
+}
+```
 
 ## Headers
 
@@ -519,7 +571,7 @@ You can add the session module to your project and start using ratpack managed s
 
 ### Preparation
 First off you need to add the required dependency to your project.
-Using gradle you can add the dependency by adding `compile group: 'io.ratpack', name: 'ratpack-session'` to dependencies.
+Using gradle you can add the dependency by adding `compile 'io.ratpack:ratpack-session:@ratpack-version@'` to dependencies.
 When you just started out your gradle file will look like this:
 
 ```language-groovy gradle
@@ -528,7 +580,7 @@ buildscript {
     jcenter()
   }
   dependencies {
-    classpath "io.ratpack:ratpack-gradle:1.5.0-rc-2"
+    classpath "io.ratpack:ratpack-gradle:@ratpack-version@"
   }
 }
 
@@ -539,14 +591,15 @@ repositories {
 }
 
 dependencies {
-  runtime 'org.slf4j:slf4j-simple:1.7.25'
-  compile group: 'io.ratpack', name: 'ratpack-session', version: '1.5.0-rc-2' // note: the version is subject to change
+  runtime 'org.slf4j:slf4j-simple:@slf4j-version@'
+  compile group: 'io.ratpack', name: 'ratpack-session', version: '@ratpack-version@'
 
-  testCompile "org.spockframework:spock-core:1.0-groovy-2.4"
+  testCompile "org.spockframework:spock-core:@spock-version@"
 }
 ```
 
 Don't forget to load the module in ratpack. 
+
 ```language-groovy tested
 import static ratpack.groovy.Groovy.ratpack
 import ratpack.session.SessionModule
@@ -617,9 +670,10 @@ If your payload is small another option is to store some session data in the coo
 Your payload should be small because all Cookies for a website (domain) combined cannot exceed 4K.
 
 ### The `ratpack-session-redis` module
-To use the redis session module add the dependency (`compile group: 'io.ratpack', name: 'ratpack-session-redis'`) to your project.
+To use the redis session module add the dependency (`compile 'io.ratpack:ratpack-session-redis:@ratpack-version@'`) to your project.
 
 Then configure redis after loading the session module.
+
 ```language-groovy
 bindings {
   module(SessionModule)
